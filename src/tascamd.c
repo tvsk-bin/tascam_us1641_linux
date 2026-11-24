@@ -1269,7 +1269,7 @@ int main(int argc, char **argv) {
             FILE *fd = fopen(diag_path, "w");
             if (fd) {
                 fprintf(fd,
-                    "epoch=%ld sink_q=%u source_q=%u sink_q_ema=%.2f source_q_ema=%.2f "
+                    "epoch=%ld sink_q=%u source_q=%u sink_target=%d source_target=%d sink_q_ema=%.2f source_q_ema=%.2f "
                     "sink_underruns=%u sink_overruns=%u src_underruns=%u src_overruns=%u "
                     "sink_slip_drop=%llu sink_slip_repeat=%llu src_slip_drop=%llu src_slip_repeat=%llu "
                     "sink_reprime=%llu src_reprime=%llu fb_missing=%llu fb_invalid=%llu fb_overflow=%llu "
@@ -1277,7 +1277,7 @@ int main(int argc, char **argv) {
                     "bulk_transfer_error=%llu bulk_unaligned=%llu source_ring_overwrite=%llu sink_ring_drop=%llu "
                     "source_unsigned_underflow=%llu sink_starvation_episodes=%llu sink_resume_episodes=%llu "
                     "fb_packets=%llu fb_last=%u source_frames=%llu\n",
-                    (long)time(NULL), sink_q, src_q, s_sink_q_filtered, s_source_q_filtered,
+                    (long)time(NULL), sink_q, src_q, s_sink_target_buffer, s_source_target_buffer, s_sink_q_filtered, s_source_q_filtered,
                     g_sink_underruns, g_sink_overruns, s_source_underruns, s_source_overruns,
                     (unsigned long long)DIAG_GET(diag_sink_slip_drop),
                     (unsigned long long)DIAG_GET(diag_sink_slip_repeat),
