@@ -21,7 +21,8 @@ METRICS = (
     "sink_reprime", "src_reprime", "fb_missing", "fb_invalid", "fb_overflow",
     "fb_transfer_error", "iso_transfer_error", "iso_packet_error",
     "bulk_transfer_error", "bulk_unaligned", "source_ring_overwrite",
-    "sink_ring_drop", "source_unsigned_underflow", "fb_packets", "source_frames"
+    "sink_ring_drop", "source_unsigned_underflow", "sink_starvation_episodes",
+    "sink_resume_episodes", "fb_packets", "source_frames"
 )
 COUNTERS = set(METRICS) - {"sink_q", "source_q", "sink_q_ema", "source_q_ema"}
 
