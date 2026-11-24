@@ -30,6 +30,20 @@ if ! "$dst_bin" --help | grep -q -- '--ultra-low-latency'; then
 fi
 sha256sum "$dst_bin" | tee "$data_dir/tascamd.sha256"
 "$dst_bin" --version | tee "$data_dir/tascamd-version.txt"
+dsp_src="$home/projects/festimix-audio-bench/build-linux/festimix_linux_host"
+dsp_dst="$data_dir/festimix_linux_host-known-good"
+if [[ ! -x "$dsp_src" ]]; then
+  echo "ERROR: compiled DSP binary missing: $dsp_src" >&2
+  exit 1
+fi
+if [[ -e "$dsp_dst" ]]; then
+  echo "Existing known-good DSP binary is PRESERVED: $dsp_dst"
+else
+  install -m 0755 "$dsp_src" "$dsp_dst"
+fi
+sha256sum "$dsp_dst" | tee "$data_dir/dsp.sha256"
+git -C "$home/projects/festimix-audio-bench" rev-parse HEAD > "$data_dir/dsp-git-commit.txt" || true
+git -C "$home/projects/Festimix" rev-parse HEAD > "$data_dir/ui-git-commit.txt" || true
 cat > "$data_dir/launch-options.txt" <<'OPTS'
 --preroll 256 --stable-playback --smooth-capture --ultra-low-latency --sink-target 48 --source-target 48
 OPTS
