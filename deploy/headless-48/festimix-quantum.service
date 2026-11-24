@@ -1,0 +1,13 @@
+[Unit]
+Description=Festimix 48-frame PipeWire quantum
+Wants=pipewire.service
+After=pipewire.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/festimix-ensure-quantum
+RemainAfterExit=yes
+TimeoutStartSec=20
+
+[Install]
+WantedBy=default.target
