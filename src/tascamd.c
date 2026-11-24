@@ -193,6 +193,8 @@ static TascamConfig g_config = {
 };
 
 static int s_sink_target_buffer = 2048;
+// Legacy startup headroom remains 512 frames. Experimental 64/128 mode lowers it to 128.
+static int s_sink_startup_headroom = 512;
 static int s_source_target_buffer = 2048;
 
 static void load_config(void) {
@@ -220,7 +222,7 @@ static void load_config(void) {
                 }
             } else if (strcmp(key, "preroll_frames") == 0 || strcmp(key, "preroll") == 0) {
                 int p = atoi(val);
-                if (p >= 256 && p <= 8192) {
+                if (p >= 64 && p <= 8192) {
                     g_config.preroll_frames = p;
                 }
             }
@@ -234,7 +236,8 @@ static void print_usage(const char *prog) {
     printf("Full-Duplex PipeWire Audio Bridge Daemon for TASCAM US-1641 (v%s)\n\n", TASCAMD_VERSION);
     printf("Options:\n");
     printf("  -r, --rate <48000|44100>   Override hardware sample rate (default: 48000)\n");
-    printf("  -p, --preroll <frames>     Override jitter pre-roll buffer frames (256..8192, default: 2048)\n");
+    printf("  -p, --preroll <frames>     Override jitter pre-roll buffer frames (256..8192 normally; 64/128 experimental)\n");
+    printf("      --experimental-low-latency  Allow 64/128 pre-roll and reduce output startup headroom\n");
     printf("  -d, --debug-log            Write continuous CSV telemetry to runtime directory\n");
     printf("  -v, --version              Print version and exit\n");
     printf("  -h, --help                 Show this help message\n");
@@ -417,12 +420,12 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
 
     // If inactive, wait until buffer accumulates at least s_sink_target_buffer frames
     if (!s_sink_active) {
-        if (queued < (uint32_t)s_sink_target_buffer + 512) {
+        if (queued < (uint32_t)s_sink_target_buffer + s_sink_startup_headroom) {
             memset(buf, 0, num_samples * 12);
             return;
         }
         // Center quantum oscillation symmetrically around s_sink_target_buffer
-        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - 512;
+        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - s_sink_startup_headroom;
         s_sink_active = true;
         s_sink_underrun_streak = 0;
         s_sink_q_filtered = (float)s_sink_target_buffer;
@@ -433,8 +436,8 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
 
     // Emergency overrun protection (e.g. system wake from suspend)
     if (queued > 12000) {
-        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - 512;
-        queued = s_sink_target_buffer + 512;
+        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - s_sink_startup_headroom;
+        queued = s_sink_target_buffer + s_sink_startup_headroom;
         s_sink_q_filtered = (float)s_sink_target_buffer;
         g_sink_overruns++;
     }
@@ -886,6 +889,7 @@ int main(int argc, char **argv) {
     signal(SIGTERM, sig_handler);
 
     load_config();
+    bool experimental_low_latency = false;
 
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--rate") == 0) && i + 1 < argc) {
@@ -898,12 +902,14 @@ int main(int argc, char **argv) {
             }
         } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--preroll") == 0) && i + 1 < argc) {
             int p = atoi(argv[++i]);
-            if (p >= 256 && p <= 8192) {
+            if (p >= 64 && p <= 8192) {
                 g_config.preroll_frames = p;
             } else {
-                fprintf(stderr, "[ERROR] Pre-roll frames must be between 256 and 8192\n");
+                fprintf(stderr, "[ERROR] Pre-roll frames must be between 64 and 8192 (64/128 require --experimental-low-latency)\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "--experimental-low-latency") == 0) {
+            experimental_low_latency = true;
         } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--debug-log") == 0) {
             g_config.debug_log = true;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
@@ -915,10 +921,19 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (g_config.preroll_frames < 256 && !experimental_low_latency) {
+        fprintf(stderr, "[ERROR] Pre-roll below 256 requires --experimental-low-latency\n");
+        return 1;
+    }
+    // The stable 256+ configuration is unchanged, with or without the flag.
+    if (experimental_low_latency && g_config.preroll_frames < 256)
+        s_sink_startup_headroom = 128;
     s_sink_target_buffer = g_config.preroll_frames;
     s_source_target_buffer = g_config.preroll_frames;
 
     printf("[INFO] Starting TASCAM US-1641 PipeWire Bridge Daemon v%s (tascamd)...\n", TASCAMD_VERSION);
+    printf("[INFO] Playback startup headroom: %d frames (%s)\n",
+           s_sink_startup_headroom, experimental_low_latency ? "experimental" : "legacy");
     printf("[INFO] Active Configuration: Sample Rate = %d Hz, Pre-roll = %d frames\n",
            g_config.sample_rate, g_config.preroll_frames);
 
