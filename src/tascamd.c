@@ -356,7 +356,7 @@ static void on_process_source(void *userdata) {
 
         // Low-pass filter queue depth across quantums to reject PipeWire quantum sawtooth
         if (queued < n_frames / 2) DIAG_INC(diag_source_unsigned_underflow);
-        s_source_q_filtered = 0.99f * s_source_q_filtered + 0.01f * (float)(queued - (n_frames / 2));
+        s_source_q_filtered = 0.99f * s_source_q_filtered + 0.01f * ((float)queued - (float)(n_frames / 2));
 
         // Emergency overrun protection (e.g. system wake from suspend)
         if (queued > 12000) {
