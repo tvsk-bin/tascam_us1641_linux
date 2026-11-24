@@ -21,7 +21,7 @@ chmod 700 "$home/.config/festimix-power"
 keypath="$home/.config/festimix-power/access-key"
 existing_pin=""
 if [[ -f "$keypath" ]]; then
-  existing_pin="$(tr -d '\\r\\n' < "$keypath")"
+  existing_pin="$(tr -d '\r\n' < "$keypath")"
 fi
 if [[ "$existing_pin" =~ ^[0-9]{4}$ ]]; then
   echo "Existing four-digit PIN preserved."
@@ -41,7 +41,7 @@ else
     pin="$(python3 -c 'import secrets; print(f"{secrets.randbelow(10000):04d}")')"
   fi
   umask 077
-  printf '%s\\n' "$pin" > "$keypath"
+  printf '%s\n' "$pin" > "$keypath"
   echo "PIN saved."
 fi
 chmod 600 "$keypath"
@@ -59,7 +59,8 @@ sudo install -o root -g root -m 0440 "$temp" /etc/sudoers.d/festimix-poweroff
 sudo /usr/sbin/visudo -cf /etc/sudoers.d/festimix-poweroff
 cp "$root/deploy/power/festimix-power.service" "$home/.config/systemd/user/festimix-power.service"
 systemctl --user daemon-reload
-systemctl --user enable --now festimix-power.service
+systemctl --user enable festimix-power.service
+systemctl --user restart festimix-power.service
 echo
 echo "Power panel enabled. Open http://<HP-IP>:3099/ from iPad."
 echo "FOUR-DIGIT PIN (keep private; anyone with it on this LAN can power off the PC):"
