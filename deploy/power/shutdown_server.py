@@ -59,43 +59,59 @@ button:disabled{opacity:.5;cursor:not-allowed}.danger{background:#953b37;border-
 <h1>Festimix · POWER</h1>
 <p>HP mini PC szabályos leállítása. A keverő hangja és az iPad-kapcsolat megszakad.</p>
 <label for="key">4 jegyű PIN</label><input id="key" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" spellcheck="false">
-<button id="prepare">SHUTDOWN</button>
-<section id="confirm"><p>Biztosan leállítod a teljes Festimix gépet?</p>
-<button id="sure" class="danger" disabled>SURE · 5</button>
-<button id="cancel">CANCEL</button></section>
-<p id="status" role="status"></p><small>Ez nem a keverő újraindítása. Visszakapcsoláshoz a HP fizikai bekapcsológombja szükséges.</small>
+<button id="shutdown" class="danger">SHUTDOWN</button>
+<p id="status" role="status"></p><small>A második nyomás csak a visszaszámlálás alatt érvényes. Ha nem erősíted meg, automatikusan CANCEL.</small>
+<p><small>A gép visszakapcsolásához a HP fizikai bekapcsológombja szükséges.</small></p>
 </main><script>
 "use strict";
-const $=id=>document.getElementById(id);let nonce="",deadline=0,timer=null;
+const $=id=>document.getElementById(id);
+const button=$("shutdown"), key=$("key");
+let nonce="", deadline=0, timer=null, busy=false;
 const status=text=>$("status").textContent=text;
-function clearConfirm(){nonce="";deadline=0;clearInterval(timer);timer=null;$("confirm").style.display="none";$("prepare").disabled=false}
+function reset(message="") {
+  nonce=""; deadline=0;
+  if(timer){clearInterval(timer);timer=null}
+  busy=false; button.disabled=false;
+  button.textContent="SHUTDOWN";
+  status(message);
+}
+function update(){
+  if(!nonce)return;
+  const remaining=deadline-Date.now();
+  if(remaining<=0){reset("CANCEL · a megerősítési idő lejárt.");return}
+  button.textContent="SURE · "+Math.ceil(remaining/1000);
+}
 async function send(url,body){
  const res=await fetch(url,{method:"POST",credentials:"same-origin",cache:"no-store",
- headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
- const obj=await res.json().catch(()=>({error:"No response"}));
- if(!res.ok)throw Error(obj.error||"Request failed");
+  headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+ const obj=await res.json().catch(()=>({error:"Nincs válasz"}));
+ if(!res.ok)throw Error(obj.error||"A kérés sikertelen");
  return obj;
 }
-$("prepare").onclick=async()=>{
- clearConfirm();
- try{
-  if(!/^[0-9]{4}$/.test($("key").value)){status("Négy számjegyet adj meg.");return}
-  const response=await send("/prepare",{key:$("key").value});
-  nonce=response.nonce;deadline=Date.now()+5000;
-  $("confirm").style.display="block";$("prepare").disabled=true;
-  $("sure").disabled=true;status("Megerősítés szükséges.");
-  timer=setInterval(()=>{let n=Math.max(0,Math.ceil((deadline-Date.now())/1000));
-   $("sure").textContent=n?"SURE · "+n:"SURE · SHUTDOWN";
-   $("sure").disabled=n>0;},100);
- }catch(err){status(err.message)}
-};
-$("cancel").onclick=()=>{clearConfirm();status("Leállítás megszakítva.")};
-$("sure").onclick=async()=>{
- if(!nonce||Date.now()<deadline)return;
- $("sure").disabled=true;
- try{await send("/execute",{key:$("key").value,nonce});
-  status("Leállítás elindítva. A kapcsolat megszakad.");clearConfirm();
- }catch(err){status(err.message);clearConfirm()}
+button.onclick=async()=>{
+ if(busy)return;
+ if(!nonce){
+  if(!/^[0-9]{4}$/.test(key.value)){status("Négy számjegyű PIN szükséges.");return}
+  busy=true;button.disabled=true;
+  try{
+   const result=await send("/prepare",{key:key.value});
+   nonce=result.nonce;
+   deadline=Date.now()+5000;
+   busy=false;button.disabled=false;
+   status("Nyomd meg ismét a SURE gombot 5 másodpercen belül.");
+   update();
+   timer=setInterval(update,100);
+  }catch(err){reset(err.message)}
+ }else{
+  if(Date.now()>=deadline){reset("CANCEL · az idő lejárt.");return}
+  const confirmedNonce=nonce;
+  nonce="";if(timer){clearInterval(timer);timer=null}
+  busy=true;button.disabled=true;button.textContent="SHUTTING DOWN";
+  try{
+   await send("/execute",{key:key.value,nonce:confirmedNonce});
+   status("Leállítás elindítva. A kapcsolat megszakad.");
+  }catch(err){reset(err.message)}
+ }
 };
 </script></body></html>"""
 
@@ -168,13 +184,13 @@ class Handler(BaseHTTPRequestHandler):
             if self.path=="/prepare":
                 token=secrets.token_urlsafe(24)
                 CHALLENGES.clear()
-                CHALLENGES[token]=(now+5.0,now+45.0)
+                CHALLENGES[token]=(now+0.35,now+5.5)
                 self.respond(200,{"nonce":token})
                 return
             token=str(data.get("nonce",""))
             entry=CHALLENGES.pop(token,None)
             if not entry or not entry[0]<=now<=entry[1]:
-                self.respond(409,{"error":"Confirmation missing, too early or expired"});return
+                self.respond(409,{"error":"SURE lejárt vagy túl gyors; újra SHUTDOWN szükséges"});return
         self.respond(200,{"ok":True,"status":"poweroff-requested"})
         def poweroff():
             time.sleep(1.0)
