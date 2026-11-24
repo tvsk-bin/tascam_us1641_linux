@@ -1,0 +1,15 @@
+[Unit]
+Description=Festimix PipeWire 14-input rack automatic patcher
+Wants=festimix-tascam.service festimix-dsp.service
+After=festimix-tascam.service festimix-dsp.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/festimix-route-loop
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
