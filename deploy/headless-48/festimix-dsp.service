@@ -6,7 +6,7 @@ After=pipewire.service festimix-tascam.service
 [Service]
 Type=simple
 WorkingDirectory=%h/projects/festimix-audio-bench
-ExecStart=%h/projects/festimix-audio-bench/build-linux/festimix_linux_host
+ExecStart=%h/.local/share/festimix-48/festimix_linux_host-known-good
 Restart=always
 RestartSec=3
 StandardOutput=journal
