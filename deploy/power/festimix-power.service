@@ -1,0 +1,16 @@
+[Unit]
+Description=Festimix LAN shutdown panel (authenticated)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/tascam_us1641_linux
+ExecStart=/usr/bin/python3 %h/projects/tascam_us1641_linux/deploy/power/shutdown_server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
