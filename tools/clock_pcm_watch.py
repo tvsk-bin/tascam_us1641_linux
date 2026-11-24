@@ -15,7 +15,7 @@ import sys
 import time
 
 METRICS = (
-    "sink_q", "source_q", "sink_q_ema", "source_q_ema",
+    "sink_q", "source_q", "sink_target", "source_target", "sink_q_ema", "source_q_ema",
     "sink_underruns", "sink_overruns", "src_underruns", "src_overruns",
     "sink_slip_drop", "sink_slip_repeat", "src_slip_drop", "src_slip_repeat",
     "sink_reprime", "src_reprime", "fb_missing", "fb_invalid", "fb_overflow",
@@ -24,7 +24,7 @@ METRICS = (
     "sink_ring_drop", "source_unsigned_underflow", "sink_starvation_episodes",
     "sink_resume_episodes", "fb_packets", "source_frames"
 )
-COUNTERS = set(METRICS) - {"sink_q", "source_q", "sink_q_ema", "source_q_ema"}
+COUNTERS = set(METRICS) - {"sink_q", "source_q", "sink_target", "source_target", "sink_q_ema", "source_q_ema"}
 
 def runtime_path(filename):
     return pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp")) / filename
