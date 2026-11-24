@@ -69,11 +69,11 @@
 #define EP_MIDI_IN    0x83
 #define EP_MIDI_OUT   0x04
 
-#define BULK_BUF_SIZE 16384 // 16 KB = 512 frames = 256 sample pairs (~5.3 ms at 48kHz)
+#define BULK_BUF_SIZE 3072 // experimental: 96 USB frames = 48 audio frames (~1 ms at 48kHz)
 #define NUM_BULK_TRANSFERS 4
 
-#define NUM_ISO_TRANSFERS 4
-#define NUM_ISO_PACKETS   40  // 40 microframes = 5 ms per transfer
+#define NUM_ISO_TRANSFERS 3 // experimental: three 1ms OUT transfers
+#define NUM_ISO_PACKETS   8   // experimental: 8 microframes = 1 ms per transfer
 
 #define NUM_FB_TRANSFERS  4
 #define NUM_FB_PACKETS    5   // 5 packets = 5 ms (1 packet per ms)
@@ -206,6 +206,7 @@ typedef struct {
     bool smooth_capture;   // opt-in fractional capture rate adaptation
     int sink_target_override;    // 0 = use historical playback target behavior
     int source_target_override;  // 0 = use historical capture target behavior
+    bool ultra_low_latency;      // flag 48 frame low latency experiment
 } TascamConfig;
 
 static TascamConfig g_config = {
@@ -216,6 +217,7 @@ static TascamConfig g_config = {
     .smooth_capture = false,
     .sink_target_override = 0,
     .source_target_override = 0,
+    .ultra_low_latency = false,
 };
 
 static int s_sink_target_buffer = 2048;
@@ -265,7 +267,8 @@ static void print_usage(const char *prog) {
     printf("      --stable-playback      1024-quantum-safe output buffering and soft underrun recovery\n");
     printf("      --smooth-capture       Interpolate fractional drift instead of dropping capture samples\n");
     printf("      --sink-target <frames>   Override playback target (256..8192)\n");
-    printf("      --source-target <frames> Override capture target (256..8192)\n");
+    printf("      --source-target <frames> Override capture target (48..8192 in ultra mode)\n");
+    printf("      --ultra-low-latency    Experimental small buffers; requires PipeWire quantum 48\n");
     printf("  -v, --version              Print version and exit\n");
     printf("  -h, --help                 Show this help message\n");
 }
@@ -345,7 +348,7 @@ static void on_process_source(void *userdata) {
         CaptureFrame *dest = (CaptureFrame *)buf->datas[0].data;
         uint32_t max_frames = buf->datas[0].maxsize / sizeof(CaptureFrame);
 
-        uint32_t n_frames = b->requested > 0 ? (uint32_t)b->requested : 1024;
+        uint32_t n_frames = b->requested > 0 ? (uint32_t)b->requested : (g_config.ultra_low_latency ? 48 : 1024);
         if (n_frames > max_frames) n_frames = max_frames;
 
         uint32_t queued = ring_avail_read_source(&g_source_rb);
@@ -497,13 +500,14 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
     s_microframe_counter++;
 
     // If inactive, wait until buffer accumulates at least s_sink_target_buffer frames
+    const uint32_t sink_half_quantum = g_config.ultra_low_latency ? 24u : 512u;
     if (!s_sink_active) {
-        if (queued < (uint32_t)s_sink_target_buffer + 512) {
+        if (queued < (uint32_t)s_sink_target_buffer + sink_half_quantum) {
             memset(buf, 0, num_samples * 12);
             return;
         }
         // Center quantum oscillation symmetrically around s_sink_target_buffer
-        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - 512;
+        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - sink_half_quantum;
         s_sink_active = true;
         DIAG_INC(diag_sink_reprime);
         s_sink_underrun_streak = 0;
@@ -515,8 +519,8 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
 
     // Emergency overrun protection (e.g. system wake from suspend)
     if (queued > 12000) {
-        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - 512;
-        queued = s_sink_target_buffer + 512;
+        g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - sink_half_quantum;
+        queued = s_sink_target_buffer + sink_half_quantum;
         s_sink_q_filtered = (float)s_sink_target_buffer;
         g_sink_overruns++;
     }
@@ -526,7 +530,7 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
     // Guarantees 0 sample slips during normal playback while preventing multi-hour crystal drift.
     int slip = 0;
     if (s_microframe_counter % 800 == 0) { // check every 100 ms (10 Hz max rate)
-        const float playback_deadband = g_config.stable_playback ? 128.f : 1024.f;
+        const float playback_deadband = g_config.ultra_low_latency ? 16.f : (g_config.stable_playback ? 128.f : 1024.f);
         if (s_sink_q_filtered > (float)s_sink_target_buffer + playback_deadband) {
             slip = 1; // drop 1 frame to let queue drain towards target
             s_sink_q_filtered -= 1.0f;
@@ -618,13 +622,13 @@ static void prepare_iso_transfer_buffer(struct libusb_transfer *transfer) {
     unsigned char *p = transfer->buffer;
     uint32_t urb = g_urb_counter++;
 
-    for (int m = 0; m < 5; m++) {
+    for (int m = 0; m < NUM_ISO_PACKETS / 8; m++) {
         uint8_t def_val;
         if (g_config.sample_rate == 48000) {
             def_val = 48;
         } else {
             // Nominal 44.1 kHz pattern: 44, 44, 44, 44, 45 (1 out of 10 ms is 45)
-            uint32_t ms_idx = urb * 5 + m;
+            uint32_t ms_idx = urb * (NUM_ISO_PACKETS / 8) + m;
             def_val = (ms_idx % 10 == 9) ? 45 : 44;
         }
 
@@ -1042,6 +1046,8 @@ int main(int argc, char **argv) {
             g_config.stable_playback = true;
         } else if (strcmp(argv[i], "--smooth-capture") == 0) {
             g_config.smooth_capture = true;
+        } else if (strcmp(argv[i], "--ultra-low-latency") == 0) {
+            g_config.ultra_low_latency = true;
         } else if (strcmp(argv[i], "--sink-target") == 0 || strcmp(argv[i], "--source-target") == 0) {
             const bool is_sink = strcmp(argv[i], "--sink-target") == 0;
             if (i + 1 >= argc) {
@@ -1051,8 +1057,8 @@ int main(int argc, char **argv) {
             const char *arg = argv[++i];
             char *end = NULL;
             const long frames = strtol(arg, &end, 10);
-            if (!arg[0] || !end || *end != '\0' || frames < 256 || frames > 8192) {
-                fprintf(stderr, "[ERROR] Invalid %s value: %s (256..8192)\n",
+            if (!arg[0] || !end || *end != '\0' || frames < (g_config.ultra_low_latency ? 48 : 256) || frames > 8192) {
+                fprintf(stderr, "[ERROR] Invalid %s value: %s (48..8192 in ultra mode)\n",
                         is_sink ? "--sink-target" : "--source-target", arg);
                 return 1;
             }
@@ -1082,6 +1088,11 @@ int main(int argc, char **argv) {
         s_sink_target_buffer = g_config.sink_target_override;
     if (g_config.source_target_override)
         s_source_target_buffer = g_config.source_target_override;
+    if (g_config.ultra_low_latency &&
+        (!g_config.sink_target_override || !g_config.source_target_override)) {
+        fprintf(stderr, "[ERROR] Ultra mode requires explicit --sink-target and --source-target values\n");
+        return 1;
+    }
     printf("[INFO] Effective buffers: sink=%d frames (%.2f ms), source=%d frames (%.2f ms)\n",
            s_sink_target_buffer, s_sink_target_buffer * 1000.0 / g_config.sample_rate,
            s_source_target_buffer, s_source_target_buffer * 1000.0 / g_config.sample_rate);
