@@ -15,7 +15,7 @@ ls -l ~/.local/share/festimix-48/tascamd-known-good
 sha256sum -c ~/.local/share/festimix-48/tascamd.sha256
 ```
 
-The first copy of `tascamd-known-good` is never overwritten by rerunning the installer. It is important that `build/tascamd` is the previously heard **working 48/48 binary** before running it.
+The first copies of `tascamd-known-good` **and** `festimix_linux_host-known-good` are never overwritten by rerunning the installer. Both binaries have SHA256 manifests. The Node/UI remains in the installed `~/projects/Festimix` checkout, with its initial Git commit recorded. It is important that `build/tascamd` is the previously heard **working 48/48 binary** before running it.
 
 ## Controlled activation (once)
 
@@ -55,7 +55,7 @@ The current config joins **TANET-2** (a network from the present site). At rehea
 ## Configuration limitations
 
 - Autostart ≠ preset persistence: the Linux DSP's in-memory control journal does **not** automatically restore channel processing settings after reboot. Load the intended scene manually and independently validate all faders, AUX, mutes and outputs. Do not promise auto restored mixing settings.
-- This deploys the currently known-good *Tascam* executable, not a frozen DSP/Node build; if DSP binaries or JS change in the directories, those changes affect the next restart.
+- This runs frozen copies of the known-good Tascam driver **and native DSP**. The Node/UI still runs from `~/projects/Festimix`; if its files or dependencies are changed, those changes affect the next restart. Avoid Git updates before rehearsal.
 - If the Tascam binary file under `~/.local/share/festimix-48` does not match the known-good SHA256, do not start it.
 - Service unit configs are in `~/.config/systemd/user`; disable autostart with:
 ```bash
