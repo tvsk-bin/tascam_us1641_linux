@@ -40,7 +40,7 @@ cp "$root/deploy/power/festimix-power.service" "$home/.config/systemd/user/festi
 systemctl --user daemon-reload
 systemctl --user enable --now festimix-power.service
 echo
-echo "Power panel enabled. Open http://<HP-IP>:3001/ from iPad."
+echo "Power panel enabled. Open http://<HP-IP>:3099/ from iPad."
 echo "ACCESS CODE (keep private; anyone with the code on this LAN can power off the PC):"
 cat "$keypath"
 echo
