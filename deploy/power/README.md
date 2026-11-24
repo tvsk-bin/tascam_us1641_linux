@@ -15,7 +15,7 @@ systemctl --user status festimix-power --no-pager
 
 Installer asks for sudo for one narrowly scoped passwordless shutdown privilege (exact command `/usr/bin/systemctl poweroff`), validates it with `visudo`, prompts for a **four-digit PIN** (or generates one if left blank) and displays it at the end. Existing long access keys are replaced by the new PIN. Record the PIN privately. Five incorrect entries cause a **global 10-minute lockout**, persisted across service restarts. Requires existing user linger from headless-48 setup for boot autostart.
 
-Navigate on iPad to `http://192.168.0.237:3099/` *only if 192.168.0.237 is still the HP's assigned Wi-Fi IP*. Enter four-digit PIN, tap **SHUTDOWN**, wait 5 seconds, then tap **SURE**. Server independently enforces the 5-second wait and 45-second expiry. A wrong PIN cannot power off; incorrect attempts are rate-limited. HTTP response comes before the delayed system shutdown; connection loss is expected.
+Navigate on iPad to `http://192.168.0.237:3099/` *only if 192.168.0.237 is still the HP's assigned Wi-Fi IP*. Enter the four-digit PIN and tap the **single SHUTDOWN button**. It becomes **SURE · 5…4…3…2…1**. **Tap the same button again before the countdown expires** to power off. If not pressed again within five seconds, the UI automatically cancels and returns to **SHUTDOWN**. Server independently enforces an approximately five-second expiry and rejects immediate accidental double-taps (350 ms minimum). A wrong PIN cannot power off; incorrect attempts are rate-limited. HTTP response comes before the delayed system shutdown; connection loss is expected.
 
 If the poweroff fails, inspect `journalctl --user -u festimix-power -n 50 --no-pager`.
 
