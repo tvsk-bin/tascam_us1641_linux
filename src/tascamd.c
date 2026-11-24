@@ -490,7 +490,27 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
     for (int s = 0; s < num_samples; s++) {
         uint32_t avail = ring_avail_read_sink(&g_sink_rb);
         if (avail == 0) {
-            memset(&buf[s * 12], 0, 12);
+            if (g_config.stable_playback) {
+                if (!s_was_starved) {
+                    s_was_starved = true;
+                    s_starvation_fade_left = PLAYBACK_RECOVERY_FRAMES;
+                    s_resume_fade_left = 0;
+                    DIAG_INC(diag_sink_starvation_episodes);
+                }
+                // Reuse the last valid DAC frame with a short decay to zero,
+                // rather than an immediate hard discontinuity.
+                const float gain = (float)s_starvation_fade_left / (float)PLAYBACK_RECOVERY_FRAMES;
+                for (int c = 0; c < SINK_CHANNELS; ++c) {
+                    float sample = s_last_dac_frame[c] * gain;
+                    int32_t s24 = float_to_s24(sample);
+                    buf[s * 12 + c * 3 + 0] = (unsigned char)(s24 & 0xff);
+                    buf[s * 12 + c * 3 + 1] = (unsigned char)((s24 >> 8) & 0xff);
+                    buf[s * 12 + c * 3 + 2] = (unsigned char)((s24 >> 16) & 0xff);
+                }
+                if (s_starvation_fade_left) --s_starvation_fade_left;
+            } else {
+                memset(&buf[s * 12], 0, 12);
+            }
             s_sink_underrun_streak++;
             if (s_sink_underrun_streak >= 240) { // ~5 ms of sustained silence (stream paused/stopped)
                 if (s_sink_active) {
