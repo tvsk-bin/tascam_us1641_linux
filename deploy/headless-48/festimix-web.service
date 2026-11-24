@@ -1,0 +1,21 @@
+[Unit]
+Description=Festimix native rack web interface
+Wants=festimix-dsp.service
+After=festimix-dsp.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/Festimix
+Environment=FESTIMIX_MIXER_PROFILE=festimixNative
+Environment=FESTIMIX_NATIVE_CHANNELS=16
+Environment=FESTIMIX_LINUX_RACK=1
+Environment=PORT=3000
+ExecStartPre=%h/.local/bin/festimix-wait-native
+ExecStart=/usr/bin/env node server.js
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
