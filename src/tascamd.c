@@ -1086,7 +1086,7 @@ int main(int argc, char **argv) {
            s_sink_target_buffer, s_sink_target_buffer * 1000.0 / g_config.sample_rate,
            s_source_target_buffer, s_source_target_buffer * 1000.0 / g_config.sample_rate);
     if (g_config.smooth_capture)
-        printf("[INFO] Smooth capture: source target=%d frames, linear interpolation and drift servo enabled\\n",
+        printf("[INFO] Smooth capture: source target=%d frames, linear interpolation and drift servo enabled\n",
                s_source_target_buffer);
     if (g_config.stable_playback)
         printf("[INFO] Stable playback: output target %d frames, capture target %d frames\n",
