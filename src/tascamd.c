@@ -203,6 +203,7 @@ typedef struct {
     int preroll_frames;    // default 2048
     bool debug_log;        // append CSV telemetry history only when requested
     bool stable_playback;  // experimental playback repair only
+    bool smooth_capture;   // opt-in fractional capture rate adaptation
 } TascamConfig;
 
 static TascamConfig g_config = {
@@ -210,6 +211,7 @@ static TascamConfig g_config = {
     .preroll_frames = 2048,
     .debug_log = false,
     .stable_playback = false,
+    .smooth_capture = false,
 };
 
 static int s_sink_target_buffer = 2048;
@@ -257,6 +259,7 @@ static void print_usage(const char *prog) {
     printf("  -p, --preroll <frames>     Override jitter pre-roll buffer frames (256..8192, default: 2048)\n");
     printf("  -d, --debug-log            Write continuous CSV telemetry to runtime directory\n");
     printf("      --stable-playback      1024-quantum-safe output buffering and soft underrun recovery\n");
+    printf("      --smooth-capture       Interpolate fractional drift instead of dropping capture samples\n");
     printf("  -v, --version              Print version and exit\n");
     printf("  -h, --help                 Show this help message\n");
 }
@@ -319,6 +322,7 @@ static void on_process_sink(void *userdata) {
 }
 
 static volatile bool s_source_active = false;
+static double s_source_phase = 0.0;
 static volatile double s_source_ratio = 1.0;
 static float s_source_q_filtered = 4096.0f;
 static volatile uint32_t s_source_underruns = 0;
@@ -353,22 +357,60 @@ static void on_process_source(void *userdata) {
             // Center quantum oscillation symmetrically around s_source_target_buffer
             g_source_rb.read_idx = g_source_rb.write_idx - s_source_target_buffer - (n_frames / 2);
             s_source_active = true;
+            s_source_phase = 0.0;
             DIAG_INC(diag_src_reprime);
             s_source_q_filtered = (float)s_source_target_buffer;
         }
 
         // Low-pass filter queue depth across quantums to reject PipeWire quantum sawtooth
         if (queued < n_frames / 2) DIAG_INC(diag_source_unsigned_underflow);
-        s_source_q_filtered = 0.99f * s_source_q_filtered + 0.01f * (float)(queued - (n_frames / 2));
+        s_source_q_filtered = 0.99f * s_source_q_filtered + 0.01f * ((float)queued - (float)(n_frames / 2));
 
         // Emergency overrun protection (e.g. system wake from suspend)
         if (queued > 12000) {
             g_source_rb.read_idx = g_source_rb.write_idx - s_source_target_buffer - (n_frames / 2);
             queued = s_source_target_buffer + (n_frames / 2);
             s_source_q_filtered = (float)s_source_target_buffer;
+            s_source_phase = 0.0;
             s_source_overruns++;
         }
 
+        // Smooth mode continuously corrects source clock drift in <=500 ppm steps.
+        // Slow EMA/p-controller rejects normal PipeWire quantum-sized bursts;
+        // fractional linear interpolation removes hard single-frame skips.
+        if (g_config.smooth_capture) {
+            const double offset = (double)s_source_q_filtered - (double)s_source_target_buffer;
+            double correction = offset * 0.0000005;
+            if (correction > 0.0005) correction = 0.0005;
+            if (correction < -0.0005) correction = -0.0005;
+            s_source_ratio = 1.0 + correction;
+            for (uint32_t i = 0; i < n_frames; ++i) {
+                if (ring_avail_read_source(&g_source_rb) < 2) {
+                    memset(&dest[i], 0, sizeof(CaptureFrame));
+                    s_source_underruns++;
+                    s_source_phase = 0.0;
+                    continue;
+                }
+                const CaptureFrame *a = &g_source_rb.frames[g_source_rb.read_idx & RING_MASK];
+                const CaptureFrame *b = &g_source_rb.frames[(g_source_rb.read_idx + 1) & RING_MASK];
+                const float frac = (float)s_source_phase;
+                for (int ch = 0; ch < SOURCE_CHANNELS; ++ch)
+                    dest[i].ch[ch] = a->ch[ch] * (1.f - frac) + b->ch[ch] * frac;
+                s_source_phase += s_source_ratio;
+                uint32_t consumed = (uint32_t)s_source_phase;
+                if (consumed) {
+                    if (consumed >= ring_avail_read_source(&g_source_rb))
+                        consumed = ring_avail_read_source(&g_source_rb) - 1;
+                    g_source_rb.read_idx += consumed;
+                    s_source_phase -= (double)consumed;
+                }
+            }
+            buf->datas[0].chunk->offset = 0;
+            buf->datas[0].chunk->size = n_frames * sizeof(CaptureFrame);
+            buf->datas[0].chunk->stride = sizeof(CaptureFrame);
+            pw_stream_queue_buffer(stream, b);
+            return;
+        }
         // Wide-deadband filtered drift steering: 0 slips during normal operation,
         // only nudging 1 sample at a zero-crossing if long-term average drifts > 1024 frames
         int slip = 0;
@@ -478,10 +520,11 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
     // Guarantees 0 sample slips during normal playback while preventing multi-hour crystal drift.
     int slip = 0;
     if (s_microframe_counter % 800 == 0) { // check every 100 ms (10 Hz max rate)
-        if (s_sink_q_filtered > (float)(s_sink_target_buffer + 1024)) {
+        const float playback_deadband = g_config.stable_playback ? 128.f : 1024.f;
+        if (s_sink_q_filtered > (float)s_sink_target_buffer + playback_deadband) {
             slip = 1; // drop 1 frame to let queue drain towards target
             s_sink_q_filtered -= 1.0f;
-        } else if (s_sink_q_filtered < (float)(s_sink_target_buffer - 1024)) {
+        } else if (s_sink_q_filtered < (float)s_sink_target_buffer - playback_deadband) {
             slip = -1; // repeat 1 frame to gently build queue towards target
             s_sink_q_filtered += 1.0f;
         }
@@ -991,6 +1034,8 @@ int main(int argc, char **argv) {
             g_config.debug_log = true;
         } else if (strcmp(argv[i], "--stable-playback") == 0) {
             g_config.stable_playback = true;
+        } else if (strcmp(argv[i], "--smooth-capture") == 0) {
+            g_config.smooth_capture = true;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
             printf("tascamd version %s\n", TASCAMD_VERSION);
             return 0;
@@ -1005,7 +1050,11 @@ int main(int argc, char **argv) {
     // Opt-in mode holds at least 1536 frames, preserving capture latency.
     s_sink_target_buffer = g_config.stable_playback && g_config.preroll_frames < 1536
                          ? 1536 : g_config.preroll_frames;
-    s_source_target_buffer = g_config.preroll_frames;
+    s_source_target_buffer = g_config.smooth_capture && g_config.preroll_frames < 1024
+                           ? 1024 : g_config.preroll_frames;
+    if (g_config.smooth_capture)
+        printf("[INFO] Smooth capture: source target=%d frames, linear interpolation and drift servo enabled\\n",
+               s_source_target_buffer);
     if (g_config.stable_playback)
         printf("[INFO] Stable playback: output target %d frames, capture target %d frames\n",
                s_sink_target_buffer, s_source_target_buffer);
