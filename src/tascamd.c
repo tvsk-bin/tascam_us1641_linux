@@ -207,6 +207,7 @@ typedef struct {
     int sink_target_override;    // 0 = use historical playback target behavior
     int source_target_override;  // 0 = use historical capture target behavior
     bool ultra_low_latency;      // flag 48 frame low latency experiment
+    bool playback_no_slip;      // diagnostic A/B: disable explicit sample drop/repeat on playback
 } TascamConfig;
 
 static TascamConfig g_config = {
@@ -218,6 +219,7 @@ static TascamConfig g_config = {
     .sink_target_override = 0,
     .source_target_override = 0,
     .ultra_low_latency = false,
+    .playback_no_slip = false,
 };
 
 static int s_sink_target_buffer = 2048;
@@ -269,6 +271,7 @@ static void print_usage(const char *prog) {
     printf("      --sink-target <frames>   Override playback target (256..8192)\n");
     printf("      --source-target <frames> Override capture target (48..8192 in ultra mode)\n");
     printf("      --ultra-low-latency    Experimental small buffers; requires PipeWire quantum 48\n");
+    printf("      --playback-no-slip     A/B test: do not drop/repeat playback frames (clock drift not corrected)\n");
     printf("  -v, --version              Print version and exit\n");
     printf("  -h, --help                 Show this help message\n");
 }
@@ -529,7 +532,7 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
     // Checks filtered average queue (not raw quantum-sawtoothed queued!) with a +-1024 frame deadband.
     // Guarantees 0 sample slips during normal playback while preventing multi-hour crystal drift.
     int slip = 0;
-    if (s_microframe_counter % 800 == 0) { // check every 100 ms (10 Hz max rate)
+    if (!g_config.playback_no_slip && s_microframe_counter % 800 == 0) { // check every 100 ms (10 Hz max rate)
         const float playback_deadband = g_config.ultra_low_latency ? 16.f : (g_config.stable_playback ? 128.f : 1024.f);
         if (s_sink_q_filtered > (float)s_sink_target_buffer + playback_deadband) {
             slip = 1; // drop 1 frame to let queue drain towards target
@@ -1048,6 +1051,8 @@ int main(int argc, char **argv) {
             g_config.smooth_capture = true;
         } else if (strcmp(argv[i], "--ultra-low-latency") == 0) {
             g_config.ultra_low_latency = true;
+        } else if (strcmp(argv[i], "--playback-no-slip") == 0) {
+            g_config.playback_no_slip = true;
         } else if (strcmp(argv[i], "--sink-target") == 0 || strcmp(argv[i], "--source-target") == 0) {
             const bool is_sink = strcmp(argv[i], "--sink-target") == 0;
             if (i + 1 >= argc) {
@@ -1088,6 +1093,8 @@ int main(int argc, char **argv) {
         s_sink_target_buffer = g_config.sink_target_override;
     if (g_config.source_target_override)
         s_source_target_buffer = g_config.source_target_override;
+    if (g_config.playback_no_slip)
+        fprintf(stderr, "[WARN] Playback slip correction disabled: short diagnostic only; clock drift may increase underruns or overflows!\n");
     if (g_config.ultra_low_latency &&
         (!g_config.sink_target_override || !g_config.source_target_override)) {
         fprintf(stderr, "[ERROR] Ultra mode requires explicit --sink-target and --source-target values\n");
