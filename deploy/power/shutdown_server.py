@@ -14,7 +14,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-PORT = int(os.environ.get("FESTIMIX_POWER_PORT", "3001"))
+PORT = int(os.environ.get("FESTIMIX_POWER_PORT", "3099"))
 SECRET_FILE = Path.home() / ".config" / "festimix-power" / "access-key"
 KEY = SECRET_FILE.read_text(encoding="utf-8").strip()
 if not KEY or len(KEY) < 24:
