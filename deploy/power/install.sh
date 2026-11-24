@@ -19,9 +19,30 @@ fi
 mkdir -p "$home/.config/festimix-power" "$home/.config/systemd/user"
 chmod 700 "$home/.config/festimix-power"
 keypath="$home/.config/festimix-power/access-key"
-if [[ ! -e "$keypath" ]]; then
+existing_pin=""
+if [[ -f "$keypath" ]]; then
+  existing_pin="$(tr -d '\\r\\n' < "$keypath")"
+fi
+if [[ "$existing_pin" =~ ^[0-9]{4}$ ]]; then
+  echo "Existing four-digit PIN preserved."
+else
+  echo "Set a new four-digit Festimix POWER PIN."
+  if [[ -t 0 ]]; then
+    while true; do
+      read -r -s -p "Enter four digits (blank = random PIN): " pin
+      echo
+      if [[ -z "$pin" ]]; then
+        pin="$(python3 -c 'import secrets; print(f"{secrets.randbelow(10000):04d}")')"
+      fi
+      if [[ "$pin" =~ ^[0-9]{4}$ ]]; then break; fi
+      echo "PIN must contain exactly four digits."
+    done
+  else
+    pin="$(python3 -c 'import secrets; print(f"{secrets.randbelow(10000):04d}")')"
+  fi
   umask 077
-  python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$keypath"
+  printf '%s\\n' "$pin" > "$keypath"
+  echo "PIN saved."
 fi
 chmod 600 "$keypath"
 
@@ -41,8 +62,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now festimix-power.service
 echo
 echo "Power panel enabled. Open http://<HP-IP>:3099/ from iPad."
-echo "ACCESS CODE (keep private; anyone with the code on this LAN can power off the PC):"
+echo "FOUR-DIGIT PIN (keep private; anyone with it on this LAN can power off the PC):"
 cat "$keypath"
 echo
-echo "This is plain HTTP; use only a trusted private Wi-Fi, not an untrusted/public network."
+echo "Five incorrect attempts lock PIN entry globally for 10 minutes, even across service restarts."\necho "This is plain HTTP; use only a trusted private Wi-Fi, not an untrusted/public network."
 echo "The audio-related services remain unchanged."
