@@ -539,13 +539,29 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
             slip = 0;
         }
 
-        // Bit-perfect 24-bit PCM conversion across all 3 bytes LE per channel
+        if (g_config.stable_playback && s_was_starved) {
+            s_was_starved = false;
+            s_resume_fade_left = PLAYBACK_RECOVERY_FRAMES;
+            const float last_gain = (float)s_starvation_fade_left / (float)PLAYBACK_RECOVERY_FRAMES;
+            for (int c = 0; c < SINK_CHANNELS; ++c)
+                s_recovery_from[c] = s_last_dac_frame[c] * last_gain;
+            DIAG_INC(diag_sink_resume_episodes);
+        }
+        // Return smoothly from the starvation fallback to actual buffered audio.
         for (int c = 0; c < 4; c++) {
-            int32_t s24 = float_to_s24(f.ch[c]);
+            float sample = f.ch[c];
+            if (g_config.stable_playback && s_resume_fade_left) {
+                const float w = (float)(PLAYBACK_RECOVERY_FRAMES - s_resume_fade_left + 1)
+                                / (float)PLAYBACK_RECOVERY_FRAMES;
+                sample = s_recovery_from[c] * (1.0f - w) + sample * w;
+            }
+            if (g_config.stable_playback) s_last_dac_frame[c] = sample;
+            int32_t s24 = float_to_s24(sample);
             buf[s * 12 + c * 3 + 0] = (unsigned char)(s24 & 0xFF);
             buf[s * 12 + c * 3 + 1] = (unsigned char)((s24 >> 8) & 0xFF);
             buf[s * 12 + c * 3 + 2] = (unsigned char)((s24 >> 16) & 0xFF);
         }
+        if (g_config.stable_playback && s_resume_fade_left) --s_resume_fade_left;
     }
 }
 
