@@ -121,6 +121,7 @@ static volatile uint64_t diag_fb_transfer_error = 0, diag_iso_transfer_error = 0
 static volatile uint64_t diag_iso_packet_error = 0, diag_bulk_transfer_error = 0;
 static volatile uint64_t diag_bulk_unaligned = 0, diag_source_ring_overwrite = 0;
 static volatile uint64_t diag_sink_ring_drop = 0;
+static volatile uint64_t diag_source_unsigned_underflow = 0;
 #define DIAG_INC(name) ((void)__atomic_fetch_add(&(name), 1ULL, __ATOMIC_RELAXED))
 #define DIAG_GET(name) __atomic_load_n(&(name), __ATOMIC_RELAXED)
 
@@ -354,6 +355,7 @@ static void on_process_source(void *userdata) {
         }
 
         // Low-pass filter queue depth across quantums to reject PipeWire quantum sawtooth
+        if (queued < n_frames / 2) DIAG_INC(diag_source_unsigned_underflow);
         s_source_q_filtered = 0.99f * s_source_q_filtered + 0.01f * (float)(queued - (n_frames / 2));
 
         // Emergency overrun protection (e.g. system wake from suspend)
@@ -1217,6 +1219,7 @@ int main(int argc, char **argv) {
                     "sink_reprime=%llu src_reprime=%llu fb_missing=%llu fb_invalid=%llu fb_overflow=%llu "
                     "fb_transfer_error=%llu iso_transfer_error=%llu iso_packet_error=%llu "
                     "bulk_transfer_error=%llu bulk_unaligned=%llu source_ring_overwrite=%llu sink_ring_drop=%llu "
+                    "source_unsigned_underflow=%llu "
                     "fb_packets=%llu fb_last=%u source_frames=%llu\n",
                     (long)time(NULL), sink_q, src_q, s_sink_q_filtered, s_source_q_filtered,
                     g_sink_underruns, g_sink_overruns, s_source_underruns, s_source_overruns,
@@ -1236,6 +1239,7 @@ int main(int argc, char **argv) {
                     (unsigned long long)DIAG_GET(diag_bulk_unaligned),
                     (unsigned long long)DIAG_GET(diag_source_ring_overwrite),
                     (unsigned long long)DIAG_GET(diag_sink_ring_drop),
+                    (unsigned long long)DIAG_GET(diag_source_unsigned_underflow),
                     (unsigned long long)g_fb_packets_count, (unsigned)g_fb_last_val,
                     (unsigned long long)g_source_frames_pushed);
                 fclose(fd);
