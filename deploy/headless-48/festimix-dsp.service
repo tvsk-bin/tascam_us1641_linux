@@ -1,0 +1,16 @@
+[Unit]
+Description=Festimix Linux native DSP
+Wants=pipewire.service festimix-tascam.service
+After=pipewire.service festimix-tascam.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/festimix-audio-bench
+ExecStart=%h/projects/festimix-audio-bench/build-linux/festimix_linux_host
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
