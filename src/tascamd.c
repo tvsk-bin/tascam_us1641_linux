@@ -204,6 +204,8 @@ typedef struct {
     bool debug_log;        // append CSV telemetry history only when requested
     bool stable_playback;  // experimental playback repair only
     bool smooth_capture;   // opt-in fractional capture rate adaptation
+    int sink_target_override;    // 0 = use historical playback target behavior
+    int source_target_override;  // 0 = use historical capture target behavior
 } TascamConfig;
 
 static TascamConfig g_config = {
@@ -212,6 +214,8 @@ static TascamConfig g_config = {
     .debug_log = false,
     .stable_playback = false,
     .smooth_capture = false,
+    .sink_target_override = 0,
+    .source_target_override = 0,
 };
 
 static int s_sink_target_buffer = 2048;
@@ -260,6 +264,8 @@ static void print_usage(const char *prog) {
     printf("  -d, --debug-log            Write continuous CSV telemetry to runtime directory\n");
     printf("      --stable-playback      1024-quantum-safe output buffering and soft underrun recovery\n");
     printf("      --smooth-capture       Interpolate fractional drift instead of dropping capture samples\n");
+    printf("      --sink-target <frames>   Override playback target (256..8192)\n");
+    printf("      --source-target <frames> Override capture target (256..8192)\n");
     printf("  -v, --version              Print version and exit\n");
     printf("  -h, --help                 Show this help message\n");
 }
@@ -1036,6 +1042,24 @@ int main(int argc, char **argv) {
             g_config.stable_playback = true;
         } else if (strcmp(argv[i], "--smooth-capture") == 0) {
             g_config.smooth_capture = true;
+        } else if (strcmp(argv[i], "--sink-target") == 0 || strcmp(argv[i], "--source-target") == 0) {
+            const bool is_sink = strcmp(argv[i], "--sink-target") == 0;
+            if (i + 1 >= argc) {
+                fprintf(stderr, "[ERROR] %s requires a frame count (256..8192)\n", argv[i]);
+                return 1;
+            }
+            const char *arg = argv[++i];
+            char *end = NULL;
+            const long frames = strtol(arg, &end, 10);
+            if (!arg[0] || !end || *end != '\0' || frames < 256 || frames > 8192) {
+                fprintf(stderr, "[ERROR] Invalid %s value: %s (256..8192)\n",
+                        is_sink ? "--sink-target" : "--source-target", arg);
+                return 1;
+            }
+            if (is_sink)
+                g_config.sink_target_override = (int)frames;
+            else
+                g_config.source_target_override = (int)frames;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
             printf("tascamd version %s\n", TASCAMD_VERSION);
             return 0;
@@ -1052,6 +1076,15 @@ int main(int argc, char **argv) {
                          ? 1536 : g_config.preroll_frames;
     s_source_target_buffer = g_config.smooth_capture && g_config.preroll_frames < 1024
                            ? 1024 : g_config.preroll_frames;
+    // Explicit test overrides apply after the legacy / stable-mode defaults.
+    // Startup may still need target + half-quantum of available PCM.
+    if (g_config.sink_target_override)
+        s_sink_target_buffer = g_config.sink_target_override;
+    if (g_config.source_target_override)
+        s_source_target_buffer = g_config.source_target_override;
+    printf("[INFO] Effective buffers: sink=%d frames (%.2f ms), source=%d frames (%.2f ms)\n",
+           s_sink_target_buffer, s_sink_target_buffer * 1000.0 / g_config.sample_rate,
+           s_source_target_buffer, s_source_target_buffer * 1000.0 / g_config.sample_rate);
     if (g_config.smooth_capture)
         printf("[INFO] Smooth capture: source target=%d frames, linear interpolation and drift servo enabled\\n",
                s_source_target_buffer);
