@@ -17,8 +17,27 @@ from urllib.parse import urlsplit
 PORT = int(os.environ.get("FESTIMIX_POWER_PORT", "3099"))
 SECRET_FILE = Path.home() / ".config" / "festimix-power" / "access-key"
 KEY = SECRET_FILE.read_text(encoding="utf-8").strip()
-if not KEY or len(KEY) < 24:
-    raise SystemExit("Missing/short power control access key")
+if len(KEY) != 4 or not KEY.isascii() or not KEY.isdecimal():
+    raise SystemExit("Power controller requires a four-digit PIN. Re-run deploy/power/install.sh")
+# Global lockout survives web service restart. Applies to all clients on the LAN.
+LIMIT_FILE = SECRET_FILE.parent / "pin-attempts.json"
+MAX_FAILED = 5
+LOCKOUT_SECONDS = 600
+def load_limits():
+    try:
+        state = json.loads(LIMIT_FILE.read_text(encoding="utf-8"))
+        return {"failures": max(0, int(state.get("failures", 0))),
+                "locked_until": float(state.get("locked_until", 0))}
+    except (OSError, ValueError, TypeError):
+        return {"failures": 0, "locked_until": 0}
+
+LIMITS = load_limits()
+def save_limits():
+    tmp = LIMIT_FILE.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        json.dump(LIMITS, output)
+    os.replace(tmp, LIMIT_FILE)
 CHALLENGES = {}
 LOCK = threading.Lock()
 POWER_COMMAND = ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", "poweroff"]
@@ -39,7 +58,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.danger{background:#953b37;border-
 </style></head><body><main>
 <h1>Festimix · POWER</h1>
 <p>HP mini PC szabályos leállítása. A keverő hangja és az iPad-kapcsolat megszakad.</p>
-<label for="key">Hozzáférési kód</label><input id="key" type="password" autocomplete="off" spellcheck="false">
+<label for="key">4 jegyű PIN</label><input id="key" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" spellcheck="false">
 <button id="prepare">SHUTDOWN</button>
 <section id="confirm"><p>Biztosan leállítod a teljes Festimix gépet?</p>
 <button id="sure" class="danger" disabled>SURE · 5</button>
@@ -60,6 +79,7 @@ async function send(url,body){
 $("prepare").onclick=async()=>{
  clearConfirm();
  try{
+  if(!/^[0-9]{4}$/.test($("key").value)){status("Négy számjegyet adj meg.");return}
   const response=await send("/prepare",{key:$("key").value});
   nonce=response.nonce;deadline=Date.now()+5000;
   $("confirm").style.display="block";$("prepare").disabled=true;
@@ -108,7 +128,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path not in ("/prepare","/execute"):
             self.respond(404,{"error":"Not found"});return
-        # Browser same-origin guard (CSRF) plus knowledge of long random key.
+        # Browser same-origin guard (CSRF) plus a rate-limited 4-digit PIN.
         origin=self.headers.get("Origin")
         host=self.headers.get("Host","")
         if not host or not origin or urlsplit(origin).netloc != host or urlsplit(origin).scheme != "http":
@@ -122,9 +142,25 @@ class Handler(BaseHTTPRequestHandler):
             data=json.loads(self.rfile.read(length))
         except (ValueError, json.JSONDecodeError):
             self.respond(400,{"error":"Invalid request"});return
-        if not isinstance(data,dict) or not hmac.compare_digest(str(data.get("key","")),KEY):
-            time.sleep(0.3)
-            self.respond(403,{"error":"Wrong access code"});return
+        if not isinstance(data, dict):
+            self.respond(400, {"error": "Invalid request"}); return
+        supplied = str(data.get("key", ""))
+        with LOCK:
+            now_wall = time.time()
+            if LIMITS["locked_until"] > now_wall:
+                self.respond(429, {"error": "Túl sok próbálkozás. Próbáld újra 10 perc múlva."})
+                return
+            if not hmac.compare_digest(supplied, KEY):
+                LIMITS["failures"] += 1
+                if LIMITS["failures"] >= MAX_FAILED:
+                    LIMITS["locked_until"] = now_wall + LOCKOUT_SECONDS
+                    LIMITS["failures"] = 0
+                save_limits()
+                self.respond(403, {"error": "Hibás PIN"})
+                return
+            LIMITS["failures"] = 0
+            LIMITS["locked_until"] = 0
+            save_limits()
         now=time.monotonic()
         with LOCK:
             for token,(_,expiry) in list(CHALLENGES.items()):
