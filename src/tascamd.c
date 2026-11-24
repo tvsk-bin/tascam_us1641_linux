@@ -202,12 +202,14 @@ typedef struct {
     int sample_rate;       // 48000 (default) or 44100
     int preroll_frames;    // default 2048
     bool debug_log;        // append CSV telemetry history only when requested
+    bool stable_playback;  // experimental playback repair only
 } TascamConfig;
 
 static TascamConfig g_config = {
     .sample_rate = 48000,
     .preroll_frames = 2048,
     .debug_log = false,
+    .stable_playback = false,
 };
 
 static int s_sink_target_buffer = 2048;
@@ -254,6 +256,7 @@ static void print_usage(const char *prog) {
     printf("  -r, --rate <48000|44100>   Override hardware sample rate (default: 48000)\n");
     printf("  -p, --preroll <frames>     Override jitter pre-roll buffer frames (256..8192, default: 2048)\n");
     printf("  -d, --debug-log            Write continuous CSV telemetry to runtime directory\n");
+    printf("      --stable-playback      1024-quantum-safe output buffering and soft underrun recovery\n");
     printf("  -v, --version              Print version and exit\n");
     printf("  -h, --help                 Show this help message\n");
 }
@@ -422,6 +425,14 @@ static volatile double s_sink_ratio = 1.0;
 static uint32_t s_microframe_counter = 0;
 static float s_sink_q_filtered = 2048.0f;
 static uint32_t s_sink_underrun_streak = 0;
+#define PLAYBACK_RECOVERY_FRAMES 48
+static float s_last_dac_frame[SINK_CHANNELS] = {0};
+static float s_recovery_from[SINK_CHANNELS] = {0};
+static uint32_t s_starvation_fade_left = 0;
+static uint32_t s_resume_fade_left = 0;
+static bool s_was_starved = false;
+static volatile uint64_t diag_sink_starvation_episodes = 0;
+static volatile uint64_t diag_sink_resume_episodes = 0;
 
 static inline int32_t float_to_s24(float s) {
     if (s > 1.0f) s = 1.0f;
