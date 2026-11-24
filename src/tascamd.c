@@ -112,6 +112,17 @@ typedef struct {
 } CaptureRingBuffer;
 
 static volatile uint64_t g_source_frames_pushed = 0;
+/* Diagnostic-only monotonic counters; no printf, malloc or file I/O in callbacks. */
+static volatile uint64_t diag_sink_slip_drop = 0, diag_sink_slip_repeat = 0;
+static volatile uint64_t diag_src_slip_drop = 0, diag_src_slip_repeat = 0;
+static volatile uint64_t diag_sink_reprime = 0, diag_src_reprime = 0;
+static volatile uint64_t diag_fb_missing = 0, diag_fb_invalid = 0, diag_fb_overflow = 0;
+static volatile uint64_t diag_fb_transfer_error = 0, diag_iso_transfer_error = 0;
+static volatile uint64_t diag_iso_packet_error = 0, diag_bulk_transfer_error = 0;
+static volatile uint64_t diag_bulk_unaligned = 0, diag_source_ring_overwrite = 0;
+static volatile uint64_t diag_sink_ring_drop = 0;
+#define DIAG_INC(name) ((void)__atomic_fetch_add(&(name), 1ULL, __ATOMIC_RELAXED))
+#define DIAG_GET(name) __atomic_load_n(&(name), __ATOMIC_RELAXED)
 
 static inline uint32_t ring_avail_read_sink(const PlaybackRingBuffer *rb) {
     return (rb->write_idx - rb->read_idx);
@@ -126,6 +137,8 @@ static inline void ring_push_sink(PlaybackRingBuffer *rb, PlaybackFrame f) {
         rb->frames[rb->write_idx & RING_MASK] = f;
         __sync_synchronize();
         rb->write_idx++;
+    } else {
+        DIAG_INC(diag_sink_ring_drop);
     }
 }
 
@@ -144,6 +157,7 @@ static inline void ring_push_source(CaptureRingBuffer *rb, CaptureFrame f) {
         __sync_synchronize();
         rb->write_idx++;
     } else {
+        DIAG_INC(diag_source_ring_overwrite);
         rb->read_idx++;
         rb->frames[rb->write_idx & RING_MASK] = f;
         __sync_synchronize();
@@ -165,6 +179,8 @@ static inline void fb_fifo_push(uint8_t token) {
         g_fb_fifo[w & FB_FIFO_MASK] = token;
         __sync_synchronize();
         g_fb_fifo_w = w + 1;
+    } else {
+        DIAG_INC(diag_fb_overflow);
     }
 }
 
@@ -177,6 +193,7 @@ static inline uint8_t fb_fifo_pop(uint8_t default_val) {
         g_fb_fifo_r = r + 1;
         return val;
     }
+    DIAG_INC(diag_fb_missing);
     return default_val;
 }
 
@@ -332,6 +349,7 @@ static void on_process_source(void *userdata) {
             // Center quantum oscillation symmetrically around s_source_target_buffer
             g_source_rb.read_idx = g_source_rb.write_idx - s_source_target_buffer - (n_frames / 2);
             s_source_active = true;
+            DIAG_INC(diag_src_reprime);
             s_source_q_filtered = (float)s_source_target_buffer;
         }
 
@@ -371,8 +389,10 @@ static void on_process_source(void *userdata) {
             if (i == 0 && slip != 0) {
                 if (slip == 1 && ring_avail_read_source(&g_source_rb) > 0) {
                     g_source_rb.read_idx++;
+                    DIAG_INC(diag_src_slip_drop);
                 } else if (slip == -1) {
                     g_source_rb.read_idx--;
+                    DIAG_INC(diag_src_slip_repeat);
                 }
                 slip = 0;
             }
@@ -424,6 +444,7 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
         // Center quantum oscillation symmetrically around s_sink_target_buffer
         g_sink_rb.read_idx = g_sink_rb.write_idx - s_sink_target_buffer - 512;
         s_sink_active = true;
+        DIAG_INC(diag_sink_reprime);
         s_sink_underrun_streak = 0;
         s_sink_q_filtered = (float)s_sink_target_buffer;
     }
@@ -477,8 +498,10 @@ static void fill_audio_packet(unsigned char *buf, int num_samples) {
         if (s == 0 && slip != 0) {
             if (slip == 1 && ring_avail_read_sink(&g_sink_rb) > 0) {
                 g_sink_rb.read_idx++;
+                DIAG_INC(diag_sink_slip_drop);
             } else if (slip == -1) {
                 g_sink_rb.read_idx--;
+                DIAG_INC(diag_sink_slip_repeat);
             }
             slip = 0;
         }
@@ -508,7 +531,10 @@ static void prepare_iso_transfer_buffer(struct libusb_transfer *transfer) {
         }
 
         uint8_t n_samples = fb_fifo_pop(def_val);
-        if (n_samples < 40 || n_samples > 55) n_samples = def_val;
+        if (n_samples < 40 || n_samples > 55) {
+            DIAG_INC(diag_fb_invalid);
+            n_samples = def_val;
+        }
 
         int pat8[8];
         if (g_config.sample_rate == 48000) {
@@ -554,8 +580,12 @@ static void LIBUSB_CALL iso_out_cb(struct libusb_transfer *transfer) {
         return;
     }
     if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
+        DIAG_INC(diag_iso_transfer_error);
         fprintf(stderr, "[WARN] Iso OUT transfer status: %d\n", transfer->status);
     }
+    for (int i = 0; i < transfer->num_iso_packets; ++i)
+        if (transfer->iso_packet_desc[i].status != LIBUSB_TRANSFER_COMPLETED)
+            DIAG_INC(diag_iso_packet_error);
     prepare_iso_transfer_buffer(transfer);
     int r = libusb_submit_transfer(transfer);
     if (r < 0) {
@@ -575,6 +605,8 @@ static void LIBUSB_CALL iso_in_fb_cb(struct libusb_transfer *transfer) {
         g_active_fb_transfers--;
         return;
     }
+    if (transfer->status != LIBUSB_TRANSFER_COMPLETED)
+        DIAG_INC(diag_fb_transfer_error);
     if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
         for (int i = 0; i < transfer->num_iso_packets; i++) {
             if (transfer->iso_packet_desc[i].status == LIBUSB_TRANSFER_COMPLETED &&
@@ -615,6 +647,7 @@ static void LIBUSB_CALL bulk_in_cb(struct libusb_transfer *transfer) {
     }
 
     if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
+        DIAG_INC(diag_bulk_transfer_error);
         if (transfer->status == LIBUSB_TRANSFER_STALL) {
             fprintf(stderr, "[WARN] Bulk IN (EP 0x86) stalled. Clearing endpoint halt...\n");
             int cr = libusb_clear_halt(g_handle, EP_BULK_IN);
@@ -634,6 +667,7 @@ static void LIBUSB_CALL bulk_in_cb(struct libusb_transfer *transfer) {
         }
     } else if (transfer->actual_length > 0) {
         const unsigned char *bulk_buf = transfer->buffer;
+        if (transfer->actual_length % 32 != 0) DIAG_INC(diag_bulk_unaligned);
         int num_frames = transfer->actual_length / 32;
 
         for (int f = 0; f < num_frames; f++) {
@@ -1169,6 +1203,42 @@ int main(int argc, char **argv) {
                         g_active_iso_transfers, (unsigned long)g_fb_packets_count, (unsigned int)g_fb_last_val,
                         (unsigned long)g_midi_in_events_count, (unsigned long)g_midi_out_events_count);
                 fclose(fstats);
+            }
+            /* Independent diagnostic snapshot, readable from third SSH session.
+             * Stable /tmp or XDG_RUNTIME_DIR; never writes from RT/USB callbacks. */
+            char diag_path[512];
+            get_runtime_file_path(diag_path, sizeof(diag_path), "tascamd_diagnostic.stats");
+            FILE *fd = fopen(diag_path, "w");
+            if (fd) {
+                fprintf(fd,
+                    "epoch=%ld sink_q=%u source_q=%u sink_q_ema=%.2f source_q_ema=%.2f "
+                    "sink_underruns=%u sink_overruns=%u src_underruns=%u src_overruns=%u "
+                    "sink_slip_drop=%llu sink_slip_repeat=%llu src_slip_drop=%llu src_slip_repeat=%llu "
+                    "sink_reprime=%llu src_reprime=%llu fb_missing=%llu fb_invalid=%llu fb_overflow=%llu "
+                    "fb_transfer_error=%llu iso_transfer_error=%llu iso_packet_error=%llu "
+                    "bulk_transfer_error=%llu bulk_unaligned=%llu source_ring_overwrite=%llu sink_ring_drop=%llu "
+                    "fb_packets=%llu fb_last=%u source_frames=%llu\n",
+                    (long)time(NULL), sink_q, src_q, s_sink_q_filtered, s_source_q_filtered,
+                    g_sink_underruns, g_sink_overruns, s_source_underruns, s_source_overruns,
+                    (unsigned long long)DIAG_GET(diag_sink_slip_drop),
+                    (unsigned long long)DIAG_GET(diag_sink_slip_repeat),
+                    (unsigned long long)DIAG_GET(diag_src_slip_drop),
+                    (unsigned long long)DIAG_GET(diag_src_slip_repeat),
+                    (unsigned long long)DIAG_GET(diag_sink_reprime),
+                    (unsigned long long)DIAG_GET(diag_src_reprime),
+                    (unsigned long long)DIAG_GET(diag_fb_missing),
+                    (unsigned long long)DIAG_GET(diag_fb_invalid),
+                    (unsigned long long)DIAG_GET(diag_fb_overflow),
+                    (unsigned long long)DIAG_GET(diag_fb_transfer_error),
+                    (unsigned long long)DIAG_GET(diag_iso_transfer_error),
+                    (unsigned long long)DIAG_GET(diag_iso_packet_error),
+                    (unsigned long long)DIAG_GET(diag_bulk_transfer_error),
+                    (unsigned long long)DIAG_GET(diag_bulk_unaligned),
+                    (unsigned long long)DIAG_GET(diag_source_ring_overwrite),
+                    (unsigned long long)DIAG_GET(diag_sink_ring_drop),
+                    (unsigned long long)g_fb_packets_count, (unsigned)g_fb_last_val,
+                    (unsigned long long)g_source_frames_pushed);
+                fclose(fd);
             }
 
             if (g_config.debug_log) {
