@@ -989,6 +989,8 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--debug-log") == 0) {
             g_config.debug_log = true;
+        } else if (strcmp(argv[i], "--stable-playback") == 0) {
+            g_config.stable_playback = true;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
             printf("tascamd version %s\n", TASCAMD_VERSION);
             return 0;
@@ -998,8 +1000,15 @@ int main(int argc, char **argv) {
         }
     }
 
-    s_sink_target_buffer = g_config.preroll_frames;
+    // 1024-frame PipeWire batches with 256-frame output watermark can
+    // run out of samples *between* otherwise successful callbacks.
+    // Opt-in mode holds at least 1536 frames, preserving capture latency.
+    s_sink_target_buffer = g_config.stable_playback && g_config.preroll_frames < 1536
+                         ? 1536 : g_config.preroll_frames;
     s_source_target_buffer = g_config.preroll_frames;
+    if (g_config.stable_playback)
+        printf("[INFO] Stable playback: output target %d frames, capture target %d frames\n",
+               s_sink_target_buffer, s_source_target_buffer);
 
     printf("[INFO] Starting TASCAM US-1641 PipeWire Bridge Daemon v%s (tascamd)...\n", TASCAMD_VERSION);
     printf("[INFO] Active Configuration: Sample Rate = %d Hz, Pre-roll = %d frames\n",
@@ -1266,7 +1275,7 @@ int main(int argc, char **argv) {
                     "sink_reprime=%llu src_reprime=%llu fb_missing=%llu fb_invalid=%llu fb_overflow=%llu "
                     "fb_transfer_error=%llu iso_transfer_error=%llu iso_packet_error=%llu "
                     "bulk_transfer_error=%llu bulk_unaligned=%llu source_ring_overwrite=%llu sink_ring_drop=%llu "
-                    "source_unsigned_underflow=%llu "
+                    "source_unsigned_underflow=%llu sink_starvation_episodes=%llu sink_resume_episodes=%llu "
                     "fb_packets=%llu fb_last=%u source_frames=%llu\n",
                     (long)time(NULL), sink_q, src_q, s_sink_q_filtered, s_source_q_filtered,
                     g_sink_underruns, g_sink_overruns, s_source_underruns, s_source_overruns,
@@ -1287,6 +1296,8 @@ int main(int argc, char **argv) {
                     (unsigned long long)DIAG_GET(diag_source_ring_overwrite),
                     (unsigned long long)DIAG_GET(diag_sink_ring_drop),
                     (unsigned long long)DIAG_GET(diag_source_unsigned_underflow),
+                    (unsigned long long)DIAG_GET(diag_sink_starvation_episodes),
+                    (unsigned long long)DIAG_GET(diag_sink_resume_episodes),
                     (unsigned long long)g_fb_packets_count, (unsigned)g_fb_last_val,
                     (unsigned long long)g_source_frames_pushed);
                 fclose(fd);
