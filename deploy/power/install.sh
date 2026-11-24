@@ -66,5 +66,6 @@ echo "Power panel enabled. Open http://<HP-IP>:3099/ from iPad."
 echo "FOUR-DIGIT PIN (keep private; anyone with it on this LAN can power off the PC):"
 cat "$keypath"
 echo
-echo "Five incorrect attempts lock PIN entry globally for 10 minutes, even across service restarts."\necho "This is plain HTTP; use only a trusted private Wi-Fi, not an untrusted/public network."
+echo "Five incorrect attempts lock PIN entry globally for 10 minutes, even across service restarts."
+echo "This is plain HTTP; use only a trusted private Wi-Fi, not an untrusted/public network."
 echo "The audio-related services remain unchanged."
