@@ -1,0 +1,17 @@
+[Unit]
+Description=Festimix Tascam US-1641 known-good 48/48 USB bridge
+Wants=pipewire.service festimix-quantum.service
+After=pipewire.service festimix-quantum.service
+
+[Service]
+Type=simple
+ExecStartPre=%h/.local/bin/festimix-ensure-quantum
+ExecStart=%h/.local/share/festimix-48/tascamd-known-good --preroll 256 --stable-playback --smooth-capture --ultra-low-latency --sink-target 48 --source-target 48
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
